@@ -1,0 +1,47 @@
+name: deploy
+
+# Ships main to the AWS instance after CI passes on main, or on demand.
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # OIDC: assume the AWS deploy role without stored keys
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-2
+      - name: Deploy to the instance
+        env:
+          TEO_VERSION: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          export TEO_VERSION="${TEO_VERSION:0:7}"
+          deploy/deploy.sh
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Teo deploy: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Commit \`${TEO_VERSION:0:7}\` to instance \`atr-teo\` (us-east-2)." >> "$GITHUB_STEP_SUMMARY"
+        env:
+          TEO_VERSION: ${{ github.event.workflow_run.head_sha || github.sha }}

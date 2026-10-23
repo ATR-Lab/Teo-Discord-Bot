@@ -1,0 +1,45 @@
+name: ops
+
+# Check on, read logs from, restart, stop or start the bot without AWS console access.
+# Stop it before running Teo locally, or both copies answer.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do
+        type: choice
+        options: [status, logs, restart, stop, start]
+        default: status
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  ops:
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-2
+      - name: Run on the instance
+        env:
+          ACTION: ${{ inputs.action }}
+        run: |
+          case "$ACTION" in
+            status)  CMD='systemctl status teo --no-pager -n 0; journalctl -u teo -n 3 --no-pager -o cat' ;;
+            logs)    CMD='journalctl -u teo -n 200 --no-pager -o short-iso' ;;
+            restart) CMD='systemctl restart teo; sleep 15; journalctl -u teo -n 5 --no-pager -o cat' ;;
+            stop)    CMD='systemctl stop teo; systemctl is-active teo || true' ;;
+            start)   CMD='systemctl start teo; sleep 15; journalctl -u teo -n 3 --no-pager -o cat' ;;
+          esac
+          ID=$(aws ec2 describe-instances --filters Name=tag:Name,Values=atr-teo Name=instance-state-name,Values=running \
+            --query 'Reservations[0].Instances[0].InstanceId' --output text)
+          C=$(aws ssm send-command --instance-ids "$ID" --document-name AWS-RunShellScript \
+            --comment "teo $ACTION" --parameters "commands=[\"$CMD\"]" --query Command.CommandId --output text)
+          aws ssm wait command-executed --command-id "$C" --instance-id "$ID" || true
+          aws ssm get-command-invocation --command-id "$C" --instance-id "$ID" \
+            --query '[Status,StandardOutputContent,StandardErrorContent]' --output text

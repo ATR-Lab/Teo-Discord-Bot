@@ -1,0 +1,56 @@
+# Ruff settings for Python in ATR Lab repos (lint and format).
+#
+# Tested with ruff 0.16.9 (Sept. 30, 2026). Docs: https://docs.astral.sh/ruff/
+#
+# The line length and quote style match the ROS 2 Python checks (ament_flake8),
+# so code that passes Ruff also passes `colcon test` in a ROS 2 package. Docstrings
+# follow the Google style; in ROS 2 packages, run ament_pep257 with
+# `--convention google` (see docs/python.md), because its default "ament"
+# convention rejects Google-style "Args:" sections.
+
+# Python 3.12: the version the AWS instance runs (Amazon Linux 2023 python3.12).
+target-version = "py312"
+line-length = 99
+
+[format]
+# ROS 2 style: "We pick single quotes over double quotes as long as no escaping
+# is necessary." Docstrings keep triple double quotes (PEP 257).
+quote-style = "single"
+docstring-code-format = true
+
+[lint]
+# Ruff 0.16 changed its default rule set, so we list every family we want.
+select = [
+  "E",    # pycodestyle errors (what flake8 checks)
+  "W",    # pycodestyle warnings
+  "F",    # Pyflakes: unused imports, undefined names
+  "I",    # isort: import order
+  "N",    # pep8-naming
+  "D",    # pydocstyle: docstrings (Google convention below)
+  "UP",   # pyupgrade: modern syntax for target-version
+  "B",    # flake8-bugbear: likely bugs
+  "A",    # flake8-builtins (also run by ament_flake8)
+  "C4",   # flake8-comprehensions (also run by ament_flake8)
+  "SIM",  # flake8-simplify
+  "NPY",  # NumPy-specific rules
+  "RUF",  # Ruff's own rules
+]
+ignore = [
+  "D100", # module docstring: optional, as in ament_pep257
+  "D104", # package docstring: __init__.py files are often empty
+  "D105", # magic-method docstring
+  "D107", # __init__ docstring: document the class instead
+]
+
+[lint.pydocstyle]
+convention = "google"
+
+[lint.isort]
+# Sort `import x` and `from x import y` together by module name, like the
+# "google" import-order style that ament_flake8 checks.
+force-sort-within-sections = true
+
+[lint.per-file-ignores]
+"test/**" = ["D"]
+"tests/**" = ["D"]
+"setup.py" = ["D"]
