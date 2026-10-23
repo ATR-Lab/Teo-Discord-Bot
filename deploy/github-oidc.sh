@@ -9,6 +9,10 @@ A() { $AWS_CLI --region "$REGION" "$@"; }
 REPO="${REPO:-ATR-Lab/Teo-Discord-Bot}"
 ROLE="$NAME-github-deploy"
 PROVIDER="arn:aws:iam::$ACCOUNT:oidc-provider/token.actions.githubusercontent.com"
+# GitHub may issue the newer immutable subject (repo:Owner@id/Repo@id); trust both forms.
+IMMUTABLE=$(gh api "repos/$REPO/actions/oidc/customization/sub" --jq .sub_claim_prefix 2>/dev/null || true)
+SUBS="\"repo:$REPO:environment:production\""
+[ -n "$IMMUTABLE" ] && SUBS="$SUBS,\"$IMMUTABLE:environment:production\""
 
 A iam get-open-id-connect-provider --open-id-connect-provider-arn "$PROVIDER" >/dev/null 2>&1 ||
   A iam create-open-id-connect-provider --url https://token.actions.githubusercontent.com \
@@ -20,7 +24,7 @@ TRUST=$(cat <<JSON
   "Action":"sts:AssumeRoleWithWebIdentity",
   "Condition":{"StringEquals":{
     "token.actions.githubusercontent.com:aud":"sts.amazonaws.com",
-    "token.actions.githubusercontent.com:sub":"repo:$REPO:environment:production"}}}]}
+    "token.actions.githubusercontent.com:sub":[$SUBS]}}}]}
 JSON
 )
 if A iam get-role --role-name "$ROLE" >/dev/null 2>&1; then
