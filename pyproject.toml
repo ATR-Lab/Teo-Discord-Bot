@@ -23,10 +23,10 @@ packages = ["teo"]
 # Dev tools pinned to the versions in ATR-Lab/dev-guidelines (configs/python/pyproject-snippet.toml).
 [dependency-groups]
 dev = [
-  "mypy==2.3.1",
+  "mypy==2.4.0",
   "pytest>=8",
   "pytest-asyncio>=1",
-  "ruff==0.16.9",
+  "ruff==0.17.1",
 ]
 
 [tool.mypy]
