@@ -1,0 +1,19 @@
+[Unit]
+Description=Teo, the ATR Lab Discord assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=teo
+WorkingDirectory=/opt/teo/app
+EnvironmentFile=/etc/teo.env
+ExecStart=/opt/teo/run.sh
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
