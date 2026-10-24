@@ -16,3 +16,10 @@ def test_env_overrides(monkeypatch):
     s = Settings.from_env()
     assert s.model == 'claude-haiku-5-5'
     assert s.user_per_hour == 5
+
+
+def test_private_categories(monkeypatch):
+    monkeypatch.setenv('TEO_PRIVATE_CATEGORY_IDS', '809304610425798667, 42,')
+    assert Settings.from_env().private_category_ids == frozenset({809304610425798667, 42})
+    monkeypatch.delenv('TEO_PRIVATE_CATEGORY_IDS')
+    assert Settings.from_env().private_category_ids == frozenset()

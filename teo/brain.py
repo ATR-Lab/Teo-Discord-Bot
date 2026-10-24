@@ -95,12 +95,14 @@ class Brain:
         """Rebuild the `lab_docs` tool after the docs index changes (costs one cache write)."""
         self.tools[0] = self.docs.tool_definition()
 
-    async def _create(self, messages: list[BetaMessageParam]) -> BetaMessage:
+    async def _create(
+        self, messages: list[BetaMessageParam], tools: list[BetaToolUnionParam]
+    ) -> BetaMessage:
         return await self.client.beta.messages.create(
             model=self.model,
             max_tokens=self.max_tokens,
             system=self.system,
-            tools=self.tools,
+            tools=tools,
             messages=messages,
             output_config=self.output_config,
             betas=[FALLBACK_BETA],
@@ -112,11 +114,13 @@ class Brain:
             return await self.docs.read(str(args.get('repo', '')), str(args.get('path', '')))
         return f'Unknown tool {name}.', True
 
-    async def answer(self, user_content: str) -> Reply:
+    async def answer(self, user_content: str, web: bool = True) -> Reply:
         """Answer one Discord turn.
 
         Args:
             user_content: The turn's context and question, already formatted as text.
+            web: Offer web search and web fetch. Off in private research channels; the
+                smaller tool list is cached as its own prefix.
 
         Returns:
             The reply text (never empty) and usage numbers.
@@ -128,8 +132,9 @@ class Brain:
         messages: list[BetaMessageParam] = [{'role': 'user', 'content': user_content}]
         reply = Reply()
         response: BetaMessage | None = None
+        tools = self.tools if web else self.tools[:1]
         for _ in range(MAX_TOOL_ROUNDS):
-            response = await self._create(messages)
+            response = await self._create(messages, tools)
             u = response.usage
             reply.input_tokens += u.input_tokens
             reply.output_tokens += u.output_tokens

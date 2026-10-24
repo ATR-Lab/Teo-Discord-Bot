@@ -61,6 +61,7 @@
 | **Where it answers** | An @mention or a reply to one of its messages in any channel it can see, the `/ask` command (add `private: True` for an answer only you see), and the first reply to every new post in **#❓・help-desk**. DMs get a one-line pointer back to the server. |
 | **What it knows** | Verified lab facts and the server rules (`teo/prompt.md`), a map of the public channels, the lab's docs repositories ([about](https://github.com/ATR-Lab/about), [getting-started-atr-lab](https://github.com/ATR-Lab/getting-started-atr-lab), [dev-guidelines](https://github.com/ATR-Lab/dev-guidelines)) through the `lab_docs` tool, plus web search and web fetch for outside questions. |
 | **Context** | The reply chain and the last 12 messages in the channel. |
+| **Research channels** | Question-only mode in 🤖 Research projects: Teo sends only the message that mentions it (plus its own earlier replies), no channel history, and web search and fetch are off there. Web tools stay on everywhere else. |
 | **Character** | An upbeat, curious lab robot with dry humor in small doses. It teaches instead of doing graded homework, says plainly when it doesn't know, and never invents lab facts. It may sign off with one of its own `:teo_*:` emoji. |
 | **Safety** | Simulation first and a person at the e-stop for any robot code; 911 first in emergencies; never asks for personal data; keeps conversations with young members in channels. |
 | **Limits** | 20 questions per person per hour and 500 per day for the server. |
@@ -116,6 +117,7 @@ All non-secret settings live in [`deploy/settings.env`](deploy/settings.env); ch
 | `TEO_HELP_FORUM_ID` | help-desk forum | Forum whose new posts Teo answers |
 | `TEO_GUILD_ID` | the ATR Lab server | The only server Teo answers in |
 | `TEO_CONTEXT_MESSAGES` | `12` | Recent channel messages sent as context |
+| `TEO_PRIVATE_CATEGORY_IDS` | 🤖 Research projects | Categories in question-only mode (comma-separated ids) |
 
 ## How it works
 
