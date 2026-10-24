@@ -45,6 +45,20 @@ def channel_label(channel: object) -> str:
     return f'#{name}' + (f' (in #{parent.name})' if parent is not None else '')
 
 
+PRIVATE_LINE = (
+    'Private research channel (question-only mode): you see only this message and your own '
+    'earlier replies, and web tools are off.'
+)
+
+
+def category_id_of(channel: object) -> int | None:
+    """Return the category of a channel, or of a thread's parent channel."""
+    if isinstance(channel, discord.Thread):
+        channel = channel.parent
+    value = getattr(channel, 'category_id', None)
+    return value if isinstance(value, int) else None
+
+
 def today_line() -> str:
     """Return the date line that opens every user turn."""
     return f'Today is {dt.date.today():%A, %B %d, %Y}.'
@@ -209,11 +223,15 @@ class Teo(discord.Client):
             await self.respond(starter, forum_title=thread.name)
 
     # ---------- answering ----------
-    async def ask_claude(self, content: str) -> Reply | None:
+    def is_private(self, channel: object) -> bool:
+        """Return whether a channel is in a question-only (research) category."""
+        return category_id_of(channel) in self.settings.private_category_ids
+
+    async def ask_claude(self, content: str, web: bool = True) -> Reply | None:
         """Call the brain, turning API failures into None after logging them."""
         assert self.brain is not None
         try:
-            return await self.brain.answer(content)
+            return await self.brain.answer(content, web=web)
         except anthropic.APIStatusError as e:
             log.error('api status %s request_id=%s', e.status_code, e.request_id)
         except anthropic.APIConnectionError:
@@ -231,9 +249,10 @@ class Teo(discord.Client):
                     COOLDOWN if limited == 'user' else DAY_LIMIT, mention_author=False
                 )
             return
-        content = await self.build_context(message, forum_title)
+        private = self.is_private(message.channel)
+        content = await self.build_context(message, forum_title, private)
         async with message.channel.typing():
-            reply = await self.ask_claude(content)
+            reply = await self.ask_claude(content, web=not private)
         if reply is None:
             await message.reply(ERROR, mention_author=False)
             return
@@ -243,7 +262,7 @@ class Teo(discord.Client):
             await message.channel.send(p, suppress_embeds=True)
         log.info(
             'answered user=%s channel=%s in=%d out=%d cache_read=%d cache_write=%d '
-            'secs=%.1f refused=%s',
+            'secs=%.1f refused=%s private=%s',
             anon(message.author.id),
             message.channel.id,
             reply.input_tokens,
@@ -252,6 +271,7 @@ class Teo(discord.Client):
             reply.cache_write,
             reply.seconds,
             reply.refused,
+            private,
         )
 
     async def handle_ask(
@@ -268,12 +288,14 @@ class Teo(discord.Client):
             return
         await interaction.response.defer(ephemeral=private, thinking=True)
         where = channel_label(interaction.channel) if interaction.channel else 'a channel'
+        research = self.is_private(interaction.channel)
         content = (
             f'{today_line()} Asked with /ask in {where}'
-            f'{" (private answer)" if private else ""}.\n\n'
+            f'{" (private answer)" if private else ""}.'
+            f'{" " + PRIVATE_LINE if research else ""}\n\n'
             f'Question from {interaction.user.display_name}:\n{question[:3000]}'
         )
-        reply = await self.ask_claude(content)
+        reply = await self.ask_claude(content, web=not research)
         text = reply.text if reply else ERROR
         parts = chunk(text if private else f'> {question[:300]}\n{text}')
         for p in parts:
@@ -292,8 +314,14 @@ class Teo(discord.Client):
             t += ' ' + ' '.join(f'[attachment: {a.filename}]' for a in m.attachments)
         return t.strip()[:3000]
 
-    async def build_context(self, message: discord.Message, forum_title: str | None) -> str:
-        """Format the reply chain, recent channel messages and the question as one user turn."""
+    async def build_context(
+        self, message: discord.Message, forum_title: str | None, private: bool = False
+    ) -> str:
+        """Format the reply chain, recent channel messages and the question as one user turn.
+
+        In a private research channel only the message itself and Teo's own earlier replies in
+        its reply chain are sent; other people's messages and channel history stay in Discord.
+        """
         chain: list[discord.Message] = []
         ref = message.reference
         while ref and len(chain) < 8:
@@ -308,19 +336,25 @@ class Teo(discord.Client):
             chain.append(prev)
             ref = prev.reference
         chain.reverse()
-        seen = {m.id for m in chain}
-        recent = [
-            m
-            async for m in message.channel.history(
-                limit=self.settings.context_messages, before=message
-            )
-            if m.id not in seen and m.content
-        ]
-        recent.reverse()
+        recent: list[discord.Message] = []
+        if private:
+            chain = [m for m in chain if m.author == self.user]
+        else:
+            seen = {m.id for m in chain}
+            recent = [
+                m
+                async for m in message.channel.history(
+                    limit=self.settings.context_messages, before=message
+                )
+                if m.id not in seen and m.content
+            ]
+            recent.reverse()
 
         lines = [
             f'{today_line()} Channel: {channel_label(message.channel)}, id {message.channel.id}.'
         ]
+        if private:
+            lines.append(PRIVATE_LINE)
         if forum_title:
             lines.append(f'This is a new help-forum post titled: {forum_title}')
         if recent:
@@ -330,7 +364,11 @@ class Teo(discord.Client):
             )
             lines += [f'{self.who(m)}: {self.text_of(m)}' for m in recent]
         if chain:
-            lines.append('\nThe conversation this message replies to:')
+            lines.append(
+                '\nYour earlier replies in this thread:'
+                if private
+                else '\nThe conversation this message replies to:'
+            )
             lines += [f'{self.who(m)}: {self.text_of(m)}' for m in chain]
         lines.append(
             f'\nMessage to answer, from {message.author.display_name}:\n{self.text_of(message)}'

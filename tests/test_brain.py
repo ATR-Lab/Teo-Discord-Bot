@@ -99,3 +99,11 @@ async def test_empty_answer_falls_back():
 def test_bad_effort_is_rejected():
     with pytest.raises(ValueError):
         Brain(FakeClient([]), FakeDocs(), 's', 'm', 'turbo', 10)
+
+
+async def test_web_tools_can_be_turned_off():
+    b, client = brain([message('end_turn', text('ok')), message('end_turn', text('ok'))])
+    await b.answer('x', web=False)
+    await b.answer('y')
+    assert [t['name'] for t in client.calls[0]['tools']] == ['lab_docs']
+    assert [t['name'] for t in client.calls[1]['tools']] == ['lab_docs', 'web_search', 'web_fetch']
