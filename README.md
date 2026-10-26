@@ -61,6 +61,7 @@
 | **Where it answers** | An @mention or a reply to one of its messages in any channel it can see, the `/ask` command (add `private: True` for an answer only you see), and the first reply to every new post in **#❓・help-desk**. DMs get a one-line pointer back to the server. |
 | **What it knows** | Verified lab facts and the server rules (`teo/prompt.md`), a map of the public channels, the lab's docs repositories ([about](https://github.com/ATR-Lab/about), [getting-started-atr-lab](https://github.com/ATR-Lab/getting-started-atr-lab), [dev-guidelines](https://github.com/ATR-Lab/dev-guidelines)) through the `lab_docs` tool, plus web search and web fetch for outside questions. |
 | **Context** | The reply chain and the last 12 messages in the channel. |
+| **Files** | Reads what people attach (and files in the message they reply to): text, code, logs and Discord's `message.txt` inline; images and PDFs natively; anything else (Office files, archives, NumPy, ROS bags, huge logs) in Claude's code execution sandbox, where Teo writes code to open it. Up to 6 files and 25 MB each; sandbox uploads expire in an hour and are deleted after the answer. `/ask` takes a `file` too. |
 | **Research channels** | Question-only mode in 🤖 Research projects: Teo sends only the message that mentions it (plus its own earlier replies), no channel history, and web search and fetch are off there. Web tools stay on everywhere else. |
 | **Character** | An upbeat, curious lab robot with dry humor in small doses. It teaches instead of doing graded homework, says plainly when it doesn't know, and never invents lab facts. It may sign off with one of its own `:teo_*:` emoji. |
 | **Safety** | Simulation first and a person at the e-stop for any robot code; 911 first in emergencies; never asks for personal data; keeps conversations with young members in channels. |
@@ -126,6 +127,7 @@ All non-secret settings live in [`deploy/settings.env`](deploy/settings.env); ch
 | [`teo/bot.py`](teo/bot.py) | Discord client: triggers, context building, replies, `/ask` and `/about-teo` |
 | [`teo/brain.py`](teo/brain.py) | One Claude request per turn with a short tool loop and refusal handling |
 | [`teo/docs.py`](teo/docs.py) | Index and cached reads of the lab's docs repositories |
+| [`teo/files.py`](teo/files.py) | Turns attachments into text, image, PDF or sandbox inputs |
 | [`teo/text.py`](teo/text.py) | Message splitting (keeps code blocks intact) and rate limiting |
 | [`teo/config.py`](teo/config.py) | Settings from the environment |
 | [`teo/prompt.md`](teo/prompt.md) | Persona, rules and verified lab facts |
