@@ -2,9 +2,12 @@
 
 Prompt layout for caching: tools, then the system prompt (persona and server map, frozen for the
 life of the process), then one user message with the volatile parts (date, channel, recent
-conversation, question). Earlier Discord turns arrive as a plain-text transcript, so no thinking
-blocks are replayed across turns; inside one turn, assistant content is appended unchanged while
-tools run.
+conversation, question, attached files). Earlier Discord turns arrive as a plain-text transcript,
+so no thinking blocks are replayed across turns; inside one turn, assistant content is appended
+unchanged while tools run.
+
+Files Claude cannot read directly are uploaded to the Files API and mounted in the code execution
+sandbox for that turn only. Uploads expire after an hour and are deleted as soon as the turn ends.
 """
 
 from dataclasses import dataclass
@@ -14,6 +17,7 @@ from typing import Any, Literal, cast
 
 import anthropic
 from anthropic.types.beta import (
+    BetaContentBlockParam,
     BetaMessage,
     BetaMessageParam,
     BetaOutputConfigParam,
@@ -23,10 +27,15 @@ from anthropic.types.beta import (
 )
 
 from .docs import LabDocs
+from .files import Prepared
 
 log = logging.getLogger('teo.brain')
 
-MAX_TOOL_ROUNDS = 6
+MAX_TOOL_ROUNDS = 8
+UPLOAD_TTL_SECONDS = 3600
+# Code execution replaces the web tools on turns with sandbox files: the _20260209 web tools run
+# their own code environment, and two environments in one request confuse the model.
+CODE_EXECUTION: BetaToolUnionParam = {'type': 'code_execution_20260521', 'name': 'code_execution'}
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
 FALLBACK_BETA = 'server-side-fallback-2026-07-01'
 REFUSED = (
@@ -96,7 +105,10 @@ class Brain:
         self.tools[0] = self.docs.tool_definition()
 
     async def _create(
-        self, messages: list[BetaMessageParam], tools: list[BetaToolUnionParam]
+        self,
+        messages: list[BetaMessageParam],
+        tools: list[BetaToolUnionParam],
+        container: str | None,
     ) -> BetaMessage:
         return await self.client.beta.messages.create(
             model=self.model,
@@ -107,20 +119,48 @@ class Brain:
             output_config=self.output_config,
             betas=[FALLBACK_BETA],
             fallbacks='default',
+            container=container or anthropic.omit,
         )
+
+    async def _upload(self, files: list[Prepared]) -> list[str]:
+        """Upload sandbox files and return their ids (failed uploads are skipped and logged)."""
+        ids: list[str] = []
+        for f in files:
+            if f.upload is None:
+                continue
+            try:
+                meta = await self.client.files.upload(
+                    file=(f.name, f.upload, 'application/octet-stream'),
+                    expires_in_seconds=UPLOAD_TTL_SECONDS,
+                )
+                ids.append(meta.id)
+            except anthropic.APIError as e:
+                log.warning('file upload failed (%s bytes): %s', len(f.upload), type(e).__name__)
+        return ids
+
+    async def _delete(self, ids: list[str]) -> None:
+        for file_id in ids:
+            try:
+                await self.client.files.delete(file_id)
+            except anthropic.APIError:
+                log.warning('could not delete uploaded file; it expires on its own')
 
     async def _run_tool(self, name: str, args: Any) -> tuple[str, bool]:
         if name == 'lab_docs' and isinstance(args, dict):
             return await self.docs.read(str(args.get('repo', '')), str(args.get('path', '')))
         return f'Unknown tool {name}.', True
 
-    async def answer(self, user_content: str, web: bool = True) -> Reply:
+    async def answer(
+        self, user_content: str, web: bool = True, files: list[Prepared] | None = None
+    ) -> Reply:
         """Answer one Discord turn.
 
         Args:
             user_content: The turn's context and question, already formatted as text.
             web: Offer web search and web fetch. Off in private research channels; the
                 smaller tool list is cached as its own prefix.
+            files: Attachments prepared by `teo.files.prepare`. Inline blocks follow the text;
+                files that need code are uploaded and mounted in the code execution sandbox.
 
         Returns:
             The reply text (never empty) and usage numbers.
@@ -129,12 +169,37 @@ class Brain:
             anthropic.APIError: When the API call fails after the SDK's own retries.
         """
         start = time.monotonic()
-        messages: list[BetaMessageParam] = [{'role': 'user', 'content': user_content}]
+        files = files or []
+        uploaded = await self._upload(files)
+        try:
+            return await self._answer(user_content, web, files, uploaded, start)
+        finally:
+            await self._delete(uploaded)
+
+    async def _answer(
+        self,
+        user_content: str,
+        web: bool,
+        files: list[Prepared],
+        uploaded: list[str],
+        start: float,
+    ) -> Reply:
+        content: list[BetaContentBlockParam] = [{'type': 'text', 'text': user_content}]
+        for f in files:
+            content += f.blocks
+        content += [{'type': 'container_upload', 'file_id': i} for i in uploaded]
+        messages: list[BetaMessageParam] = [{'role': 'user', 'content': content}]
+        if uploaded:
+            tools = [self.tools[0], CODE_EXECUTION]
+        else:
+            tools = self.tools if web else self.tools[:1]
         reply = Reply()
         response: BetaMessage | None = None
-        tools = self.tools if web else self.tools[:1]
+        container: str | None = None
         for _ in range(MAX_TOOL_ROUNDS):
-            response = await self._create(messages, tools)
+            response = await self._create(messages, tools, container)
+            if response.container is not None:
+                container = response.container.id  # keep the sandbox (and its files) this turn
             u = response.usage
             reply.input_tokens += u.input_tokens
             reply.output_tokens += u.output_tokens

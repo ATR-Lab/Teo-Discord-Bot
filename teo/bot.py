@@ -20,6 +20,7 @@ from discord import app_commands
 from .brain import Brain, Reply
 from .config import Settings
 from .docs import LabDocs
+from .files import MAX_FILE_BYTES, MAX_FILES, MAX_TOTAL_BYTES, Prepared, prepare
 from .text import RateLimiter, anon, chunk
 
 log = logging.getLogger('teo')
@@ -95,12 +96,17 @@ class Teo(discord.Client):
             name='ask', description='Ask Teo, the ATR Lab assistant, a question', guild=guild
         )
         @app_commands.describe(
-            question='What do you want to know?', private='Only you see the answer'
+            question='What do you want to know?',
+            private='Only you see the answer',
+            file='A file for Teo to read: code, a log, an image, a PDF or a document',
         )
         async def ask(
-            interaction: discord.Interaction, question: str, private: bool = False
+            interaction: discord.Interaction,
+            question: str,
+            private: bool = False,
+            file: discord.Attachment | None = None,
         ) -> None:
-            await self.handle_ask(interaction, question, private)
+            await self.handle_ask(interaction, question, private, file)
 
         @self.tree.command(
             name='about-teo',
@@ -227,11 +233,49 @@ class Teo(discord.Client):
         """Return whether a channel is in a question-only (research) category."""
         return category_id_of(channel) in self.settings.private_category_ids
 
-    async def ask_claude(self, content: str, web: bool = True) -> Reply | None:
+    async def gather_files(
+        self, attachments: list[discord.Attachment]
+    ) -> tuple[list[Prepared], list[str]]:
+        """Download and prepare attachments, in order, within the size and count limits.
+
+        Returns:
+            The prepared files and one line per file that was left out, with the reason.
+        """
+        prepared: list[Prepared] = []
+        skipped: list[str] = []
+        total = 0
+        for a in attachments:
+            if len(prepared) >= MAX_FILES:
+                skipped.append(f'{a.filename} (not read: only {MAX_FILES} files per question)')
+            elif a.size > MAX_FILE_BYTES or total + a.size > MAX_TOTAL_BYTES:
+                skipped.append(f'{a.filename} (not read: {a.size / 1e6:.1f} MB is too large)')
+            else:
+                try:
+                    data = await a.read()
+                except discord.HTTPException:
+                    skipped.append(f'{a.filename} (not read: download failed)')
+                    continue
+                total += len(data)
+                prepared.append(await asyncio.to_thread(prepare, a.filename, a.content_type, data))
+        return prepared, skipped
+
+    @staticmethod
+    def files_section(prepared: list[Prepared], skipped: list[str]) -> str:
+        """Describe the attached files for the user turn."""
+        if not prepared and not skipped:
+            return ''
+        lines = ['\nFiles attached to this question:']
+        lines += [f'- {p.note}' for p in prepared]
+        lines += [f'- {s}' for s in skipped]
+        return '\n'.join(lines)
+
+    async def ask_claude(
+        self, content: str, web: bool = True, files: list[Prepared] | None = None
+    ) -> Reply | None:
         """Call the brain, turning API failures into None after logging them."""
         assert self.brain is not None
         try:
-            return await self.brain.answer(content, web=web)
+            return await self.brain.answer(content, web=web, files=files)
         except anthropic.APIStatusError as e:
             log.error('api status %s request_id=%s', e.status_code, e.request_id)
         except anthropic.APIConnectionError:
@@ -250,9 +294,17 @@ class Teo(discord.Client):
                 )
             return
         private = self.is_private(message.channel)
-        content = await self.build_context(message, forum_title, private)
+        content, chain = await self.build_context(message, forum_title, private)
+        # The message's own files first, then files in the messages it replies to (newest first).
+        # In research channels the chain holds only Teo's replies, so only the asker's files go.
+        attachments = list(message.attachments)
+        for m in reversed(chain):
+            if m.author != self.user:
+                attachments += m.attachments
         async with message.channel.typing():
-            reply = await self.ask_claude(content, web=not private)
+            files, skipped = await self.gather_files(attachments)
+            content += self.files_section(files, skipped)
+            reply = await self.ask_claude(content, web=not private, files=files)
         if reply is None:
             await message.reply(ERROR, mention_author=False)
             return
@@ -262,7 +314,7 @@ class Teo(discord.Client):
             await message.channel.send(p, suppress_embeds=True)
         log.info(
             'answered user=%s channel=%s in=%d out=%d cache_read=%d cache_write=%d '
-            'secs=%.1f refused=%s private=%s',
+            'secs=%.1f refused=%s private=%s files=%s',
             anon(message.author.id),
             message.channel.id,
             reply.input_tokens,
@@ -272,10 +324,15 @@ class Teo(discord.Client):
             reply.seconds,
             reply.refused,
             private,
+            ','.join(f.kind for f in files) or '-',
         )
 
     async def handle_ask(
-        self, interaction: discord.Interaction, question: str, private: bool
+        self,
+        interaction: discord.Interaction,
+        question: str,
+        private: bool,
+        file: discord.Attachment | None = None,
     ) -> None:
         """Answer the /ask command."""
         if self.brain is None:
@@ -295,7 +352,9 @@ class Teo(discord.Client):
             f'{" " + PRIVATE_LINE if research else ""}\n\n'
             f'Question from {interaction.user.display_name}:\n{question[:3000]}'
         )
-        reply = await self.ask_claude(content, web=not research)
+        files, skipped = await self.gather_files([file] if file else [])
+        content += self.files_section(files, skipped)
+        reply = await self.ask_claude(content, web=not research, files=files)
         text = reply.text if reply else ERROR
         parts = chunk(text if private else f'> {question[:300]}\n{text}')
         for p in parts:
@@ -316,8 +375,11 @@ class Teo(discord.Client):
 
     async def build_context(
         self, message: discord.Message, forum_title: str | None, private: bool = False
-    ) -> str:
+    ) -> tuple[str, list[discord.Message]]:
         """Format the reply chain, recent channel messages and the question as one user turn.
+
+        Returns:
+            The turn's text and the reply chain it used (oldest first).
 
         In a private research channel only the message itself and Teo's own earlier replies in
         its reply chain are sent; other people's messages and channel history stay in Discord.
@@ -373,7 +435,7 @@ class Teo(discord.Client):
         lines.append(
             f'\nMessage to answer, from {message.author.display_name}:\n{self.text_of(message)}'
         )
-        return '\n'.join(lines)
+        return '\n'.join(lines), chain
 
 
 def about_embed() -> discord.Embed:

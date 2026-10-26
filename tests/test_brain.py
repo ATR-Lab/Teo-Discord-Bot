@@ -15,7 +15,7 @@ def usage():
 
 
 def message(stop, *blocks):
-    return SimpleNamespace(stop_reason=stop, content=list(blocks), usage=usage())
+    return SimpleNamespace(stop_reason=stop, content=list(blocks), usage=usage(), container=None)
 
 
 def text(t):
@@ -107,3 +107,49 @@ async def test_web_tools_can_be_turned_off():
     await b.answer('y')
     assert [t['name'] for t in client.calls[0]['tools']] == ['lab_docs']
     assert [t['name'] for t in client.calls[1]['tools']] == ['lab_docs', 'web_search', 'web_fetch']
+
+
+class FakeFiles:
+    def __init__(self):
+        self.uploaded, self.deleted = [], []
+
+    async def upload(self, file, expires_in_seconds):
+        self.uploaded.append((file[0], expires_in_seconds))
+        return SimpleNamespace(id=f'file_{len(self.uploaded)}')
+
+    async def delete(self, file_id):
+        self.deleted.append(file_id)
+
+
+async def test_sandbox_files_are_uploaded_mounted_and_deleted():
+    from teo.files import prepare
+
+    b, client = brain([message('end_turn', text('It is a Word file'))])
+    client.files = FakeFiles()
+    docx = prepare('report.docx', None, b'PK\x03\x04\x00\x00binary')
+    note = prepare('notes.md', None, b'# hi')
+    reply = await b.answer('what is in these?', files=[docx, note])
+    assert reply.text == 'It is a Word file'
+    call = client.calls[0]
+    assert [t['name'] for t in call['tools']] == ['lab_docs', 'code_execution']
+    content = call['messages'][0]['content']
+    assert content[0]['type'] == 'text'
+    assert content[1]['type'] == 'document'  # notes.md inline
+    assert content[2] == {'type': 'container_upload', 'file_id': 'file_1'}
+    assert client.files.uploaded == [('report.docx', 3600)]
+    assert client.files.deleted == ['file_1']
+
+
+async def test_files_are_deleted_even_when_the_api_fails():
+    from teo.files import prepare
+
+    class Boom(FakeClient):
+        async def _create(self, **kwargs):
+            raise RuntimeError('api down')
+
+    client = Boom([])
+    client.files = FakeFiles()
+    b = Brain(client, FakeDocs(), 's', 'claude-opus-5-5', 'low', 10)
+    with pytest.raises(RuntimeError):
+        await b.answer('x', files=[prepare('a.bin', None, b'\x00\x01')])
+    assert client.files.deleted == ['file_1']
