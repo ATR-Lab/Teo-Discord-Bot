@@ -10,6 +10,7 @@ Files Claude cannot read directly are uploaded to the Files API and mounted in t
 sandbox for that turn only. Uploads expire after an hour and are deleted as soon as the turn ends.
 """
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import logging
 import time
@@ -26,6 +27,7 @@ from anthropic.types.beta import (
     BetaToolUnionParam,
 )
 
+from .actions import ACTION_NAMES, tool_definitions
 from .docs import LabDocs
 from .files import Prepared
 
@@ -56,6 +58,9 @@ class Reply:
     cache_write: int = 0
     seconds: float = 0.0
     refused: bool = False
+
+
+Runner = Callable[[str, dict[str, Any]], Awaitable[tuple[str, bool]]]
 
 
 class Brain:
@@ -94,15 +99,17 @@ class Brain:
                 'cache_control': {'type': 'ephemeral', 'ttl': '1h'},
             }
         ]
-        self.tools: list[BetaToolUnionParam] = [
-            docs.tool_definition(),
+        # Client tools first, in a fixed order; the variants below share this prefix.
+        self.client_tools: list[BetaToolUnionParam] = [docs.tool_definition()]
+        self.client_tools += tool_definitions()
+        self.web_tools: list[BetaToolUnionParam] = [
             {'type': 'web_search_20260209', 'name': 'web_search', 'max_uses': 3},
             {'type': 'web_fetch_20260209', 'name': 'web_fetch', 'max_uses': 3},
         ]
 
     def refresh_tools(self) -> None:
         """Rebuild the `lab_docs` tool after the docs index changes (costs one cache write)."""
-        self.tools[0] = self.docs.tool_definition()
+        self.client_tools[0] = self.docs.tool_definition()
 
     async def _create(
         self,
@@ -145,13 +152,21 @@ class Brain:
             except anthropic.APIError:
                 log.warning('could not delete uploaded file; it expires on its own')
 
-    async def _run_tool(self, name: str, args: Any) -> tuple[str, bool]:
-        if name == 'lab_docs' and isinstance(args, dict):
+    async def _run_tool(self, name: str, args: Any, runner: Runner | None) -> tuple[str, bool]:
+        if not isinstance(args, dict):
+            return 'Tool input must be an object.', True
+        if name == 'lab_docs':
             return await self.docs.read(str(args.get('repo', '')), str(args.get('path', '')))
-        return f'Unknown tool {name}.', True
+        if name in ACTION_NAMES and runner is not None:
+            return await runner(name, args)
+        return f'The {name} tool is not available here.', True
 
     async def answer(
-        self, user_content: str, web: bool = True, files: list[Prepared] | None = None
+        self,
+        user_content: str,
+        web: bool = True,
+        files: list[Prepared] | None = None,
+        runner: Runner | None = None,
     ) -> Reply:
         """Answer one Discord turn.
 
@@ -161,6 +176,8 @@ class Brain:
                 smaller tool list is cached as its own prefix.
             files: Attachments prepared by `teo.files.prepare`. Inline blocks follow the text;
                 files that need code are uploaded and mounted in the code execution sandbox.
+            runner: Runs action tools (reminders, events) for the person asking. Without it,
+                those tools answer that they are unavailable.
 
         Returns:
             The reply text (never empty) and usage numbers.
@@ -172,7 +189,7 @@ class Brain:
         files = files or []
         uploaded = await self._upload(files)
         try:
-            return await self._answer(user_content, web, files, uploaded, start)
+            return await self._answer(user_content, web, files, uploaded, start, runner)
         finally:
             await self._delete(uploaded)
 
@@ -183,6 +200,7 @@ class Brain:
         files: list[Prepared],
         uploaded: list[str],
         start: float,
+        runner: Runner | None,
     ) -> Reply:
         content: list[BetaContentBlockParam] = [{'type': 'text', 'text': user_content}]
         for f in files:
@@ -190,9 +208,11 @@ class Brain:
         content += [{'type': 'container_upload', 'file_id': i} for i in uploaded]
         messages: list[BetaMessageParam] = [{'role': 'user', 'content': content}]
         if uploaded:
-            tools = [self.tools[0], CODE_EXECUTION]
+            tools = [*self.client_tools, CODE_EXECUTION]
+        elif web:
+            tools = [*self.client_tools, *self.web_tools]
         else:
-            tools = self.tools if web else self.tools[:1]
+            tools = list(self.client_tools)
         reply = Reply()
         response: BetaMessage | None = None
         container: str | None = None
@@ -219,7 +239,7 @@ class Brain:
             results: list[BetaToolResultBlockParam] = []
             for block in response.content:
                 if block.type == 'tool_use':
-                    text, is_error = await self._run_tool(block.name, block.input)
+                    text, is_error = await self._run_tool(block.name, block.input, runner)
                     results.append(
                         {
                             'type': 'tool_result',

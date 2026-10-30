@@ -8,6 +8,9 @@ User=teo
 WorkingDirectory=/opt/teo/app
 EnvironmentFile=/etc/teo.env
 ExecStart=/opt/teo/run.sh
+# Reminders live in /var/lib/teo (STATE_DIRECTORY); it survives deploys and restarts.
+StateDirectory=teo
+StateDirectoryMode=0700
 Restart=always
 RestartSec=10
 NoNewPrivileges=true
