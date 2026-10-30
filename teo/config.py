@@ -27,6 +27,10 @@ class Settings:
     context_messages: int = 12
     # Categories in question-only mode: no channel history, no web tools (research channels).
     private_category_ids: frozenset[int] = frozenset()
+    # Roles whose members may ask Teo to create server events (besides Discord's own permission).
+    event_role_ids: frozenset[int] = frozenset()
+    # Where reminders are stored; systemd sets STATE_DIRECTORY on the server.
+    state_dir: str = 'state'
 
     @classmethod
     def from_env(cls) -> 'Settings':
@@ -43,4 +47,6 @@ class Settings:
             guild_per_day=int(env('TEO_GUILD_PER_DAY', d.guild_per_day)),
             context_messages=int(env('TEO_CONTEXT_MESSAGES', d.context_messages)),
             private_category_ids=parse_ids(env('TEO_PRIVATE_CATEGORY_IDS', '')),
+            event_role_ids=parse_ids(env('TEO_EVENT_ROLE_IDS', '')),
+            state_dir=env('STATE_DIRECTORY', d.state_dir),
         )

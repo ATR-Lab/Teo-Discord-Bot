@@ -11,12 +11,14 @@ import datetime as dt
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 import aiohttp
 import anthropic
 import discord
 from discord import app_commands
 
+from .actions import LAB_TZ, ActionContext, Actions, ReminderStore, lab_time, now, parse_when
 from .brain import Brain, Reply
 from .config import Settings
 from .docs import LabDocs
@@ -61,8 +63,10 @@ def category_id_of(channel: object) -> int | None:
 
 
 def today_line() -> str:
-    """Return the date line that opens every user turn."""
-    return f'Today is {dt.date.today():%A, %B %d, %Y}.'
+    """Return the date and time line that opens every user turn (lab time)."""
+    t = dt.datetime.now(LAB_TZ)
+    clock = t.strftime('%I:%M %p %Z').lstrip('0')
+    return f'Now: {t:%A, %B %d, %Y}, {clock} (lab time, America/New_York).'
 
 
 class Teo(discord.Client):
@@ -83,6 +87,8 @@ class Teo(discord.Client):
         self.http_session: aiohttp.ClientSession | None = None
         self.docs: LabDocs | None = None
         self.brain: Brain | None = None
+        os.makedirs(settings.state_dir, exist_ok=True)
+        self.actions = Actions(ReminderStore(os.path.join(settings.state_dir, 'teo.db')))
 
     # ---------- startup ----------
     async def setup_hook(self) -> None:
@@ -116,8 +122,33 @@ class Teo(discord.Client):
         async def about(interaction: discord.Interaction) -> None:
             await interaction.response.send_message(embed=about_embed(), ephemeral=True)
 
+        @self.tree.command(
+            name='reminders', description='See your upcoming Teo reminders', guild=guild
+        )
+        async def reminders(interaction: discord.Interaction) -> None:
+            items = self.actions.store.pending(interaction.user.id)
+            text = (
+                '\n'.join(f'**#{r.id}** · {lab_time(r.fire_at)} · {r.text}' for r in items)
+                if items
+                else 'You have no upcoming reminders. Ask me, for example: '
+                '"@Teo remind me to submit the HRI paper on Nov 13 at 5 PM".'
+            )
+            await interaction.response.send_message(text, ephemeral=True)
+
+        @self.tree.command(
+            name='reminder-cancel', description='Cancel one of your Teo reminders', guild=guild
+        )
+        @app_commands.describe(id='The reminder number from /reminders')
+        async def reminder_cancel(interaction: discord.Interaction, id: int) -> None:  # noqa: A002
+            ok = self.actions.store.cancel(interaction.user.id, id)
+            await interaction.response.send_message(
+                f'Reminder #{id} cancelled.' if ok else f'You have no upcoming reminder #{id}.',
+                ephemeral=True,
+            )
+
         await self.tree.sync(guild=guild)
         self.loop.create_task(self.refresh_docs_daily())
+        self.loop.create_task(self.deliver_reminders())
 
     async def on_ready(self) -> None:
         """Build the system prompt once the guild cache is ready."""
@@ -233,6 +264,132 @@ class Teo(discord.Client):
         """Return whether a channel is in a question-only (research) category."""
         return category_id_of(channel) in self.settings.private_category_ids
 
+    # ---------- actions: events and reminders ----------
+    def may_create_events(self, user: discord.abc.User) -> bool:
+        """Return whether this member may ask Teo to create server events."""
+        if not isinstance(user, discord.Member):
+            return False
+        p = user.guild_permissions
+        if p.administrator or p.manage_events or p.create_events:
+            return True
+        return any(r.id in self.settings.event_role_ids for r in user.roles)
+
+    def action_context(
+        self, user: discord.abc.User, channel_id: int, jump_url: str
+    ) -> ActionContext:
+        """Build the context action tools run in for one question."""
+        return ActionContext(
+            user_id=user.id,
+            channel_id=channel_id,
+            jump_url=jump_url,
+            can_create_events=self.may_create_events(user),
+            create_event=lambda args: self.create_event(args, user),
+            list_events=self.list_events,
+        )
+
+    async def create_event(self, args: dict[str, Any], user: discord.abc.User) -> str:
+        """Create a scheduled event from validated tool input and return its link."""
+        guild = self.get_guild(self.settings.guild_id)
+        if guild is None:
+            raise ValueError('the server is not available right now')
+        name = str(args.get('name', '')).strip()[:100]
+        if not name:
+            raise ValueError('the event needs a name')
+        start = parse_when(str(args['start']))
+        if start <= now():
+            raise ValueError('the start time is in the past')
+        end = parse_when(str(args['end'])) if args.get('end') else None
+        if end is not None and end <= start:
+            raise ValueError('the end time must be after the start time')
+        description = str(args.get('description', '')).strip()[:1000] or discord.utils.MISSING
+        reason = f'Requested by {user} through Teo'
+        voice_id = str(args.get('voice_channel_id', '') or '')
+        if voice_id:
+            channel = guild.get_channel(int(voice_id))
+            if not isinstance(channel, discord.VoiceChannel | discord.StageChannel):
+                raise ValueError('voice_channel_id is not a voice channel on this server')
+            event = await guild.create_scheduled_event(
+                name=name,
+                start_time=start,
+                end_time=end or discord.utils.MISSING,
+                channel=channel,
+                privacy_level=discord.PrivacyLevel.guild_only,
+                description=description,
+                reason=reason,
+            )
+        else:
+            location = str(args.get('location', '')).strip()[:100]
+            if not location:
+                raise ValueError('an in-person event needs a location (or give a voice channel)')
+            event = await guild.create_scheduled_event(
+                name=name,
+                start_time=start,
+                end_time=end or start + dt.timedelta(hours=1),
+                entity_type=discord.EntityType.external,
+                location=location,
+                privacy_level=discord.PrivacyLevel.guild_only,
+                description=description,
+                reason=reason,
+            )
+        note = '' if end else ' No end time was given, so it is set to one hour.'
+        return f'Created "{event.name}" for {lab_time(start)}: {event.url}.{note}'
+
+    async def list_events(self) -> str:
+        """Describe upcoming scheduled events."""
+        guild = self.get_guild(self.settings.guild_id)
+        if guild is None:
+            return 'The server is not available right now.'
+        events = sorted(await guild.fetch_scheduled_events(), key=lambda e: e.start_time)
+        if not events:
+            return 'No upcoming events.'
+        return '\n'.join(
+            f'{e.name}: {lab_time(e.start_time)}'
+            + (f' at {e.location}' if e.location else '')
+            + (f' in {e.channel.name}' if e.channel else '')
+            + f' ({e.url})'
+            for e in events[:15]
+        )
+
+    async def post_reminder(self, channel_id: int, user_id: int, text: str) -> bool:
+        """Post a reminder in its channel, or DM the person if that channel is unavailable."""
+        mentions = discord.AllowedMentions(users=[discord.Object(user_id)])
+        try:
+            channel = self.get_channel(channel_id) or await self.fetch_channel(channel_id)
+            if isinstance(channel, discord.abc.Messageable):
+                await channel.send(text, allowed_mentions=mentions)
+                return True
+        except discord.HTTPException:
+            pass  # deleted, or Teo can no longer post there
+        try:
+            user = await self.fetch_user(user_id)
+            await user.send(text.replace(f'<@{user_id}> ', ''))
+            return True
+        except discord.HTTPException:
+            return False
+
+    async def deliver_reminders(self) -> None:
+        """Every 20 seconds, post reminders that are due (late ones say so)."""
+        await self.wait_until_ready()
+        while not self.is_closed():
+            try:
+                await self.deliver_due()
+            except Exception:  # keep the loop alive whatever one reminder does
+                log.exception('reminder delivery failed')
+            await asyncio.sleep(20)
+
+    async def deliver_due(self) -> None:
+        """Post every reminder whose time has come."""
+        for r in self.actions.store.due(now()):
+            late = now() - r.fire_at > dt.timedelta(minutes=10)
+            text = (
+                f'⏰ <@{r.user_id}> Reminder: {r.text}\n'
+                f'-# Set [here]({r.jump_url}) for {lab_time(r.fire_at)}'
+                + (" (I was offline then, sorry it's late)" if late else '')
+            )
+            if not await self.post_reminder(r.channel_id, r.user_id, text):
+                log.warning('reminder %s could not be delivered', r.id)
+            self.actions.store.mark_sent(r.id)
+
     async def gather_files(
         self, attachments: list[discord.Attachment]
     ) -> tuple[list[Prepared], list[str]]:
@@ -270,12 +427,23 @@ class Teo(discord.Client):
         return '\n'.join(lines)
 
     async def ask_claude(
-        self, content: str, web: bool = True, files: list[Prepared] | None = None
+        self,
+        content: str,
+        web: bool = True,
+        files: list[Prepared] | None = None,
+        ctx: ActionContext | None = None,
     ) -> Reply | None:
         """Call the brain, turning API failures into None after logging them."""
         assert self.brain is not None
         try:
-            return await self.brain.answer(content, web=web, files=files)
+            runner = None
+            if ctx is not None:
+                action_ctx = ctx
+
+                async def runner(name: str, args: dict[str, Any]) -> tuple[str, bool]:
+                    return await self.actions.run(name, args, action_ctx)
+
+            return await self.brain.answer(content, web=web, files=files, runner=runner)
         except anthropic.APIStatusError as e:
             log.error('api status %s request_id=%s', e.status_code, e.request_id)
         except anthropic.APIConnectionError:
@@ -304,7 +472,8 @@ class Teo(discord.Client):
         async with message.channel.typing():
             files, skipped = await self.gather_files(attachments)
             content += self.files_section(files, skipped)
-            reply = await self.ask_claude(content, web=not private, files=files)
+            ctx = self.action_context(message.author, message.channel.id, message.jump_url)
+            reply = await self.ask_claude(content, web=not private, files=files, ctx=ctx)
         if reply is None:
             await message.reply(ERROR, mention_author=False)
             return
@@ -354,7 +523,9 @@ class Teo(discord.Client):
         )
         files, skipped = await self.gather_files([file] if file else [])
         content += self.files_section(files, skipped)
-        reply = await self.ask_claude(content, web=not research, files=files)
+        jump = f'https://discord.com/channels/{self.settings.guild_id}/{interaction.channel_id}'
+        ctx = self.action_context(interaction.user, interaction.channel_id or 0, jump)
+        reply = await self.ask_claude(content, web=not research, files=files, ctx=ctx)
         text = reply.text if reply else ERROR
         parts = chunk(text if private else f'> {question[:300]}\n{text}')
         for p in parts:
