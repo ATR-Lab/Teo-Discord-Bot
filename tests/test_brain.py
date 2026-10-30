@@ -105,8 +105,24 @@ async def test_web_tools_can_be_turned_off():
     b, client = brain([message('end_turn', text('ok')), message('end_turn', text('ok'))])
     await b.answer('x', web=False)
     await b.answer('y')
-    assert [t['name'] for t in client.calls[0]['tools']] == ['lab_docs']
-    assert [t['name'] for t in client.calls[1]['tools']] == ['lab_docs', 'web_search', 'web_fetch']
+    assert [t['name'] for t in client.calls[0]['tools']] == [
+        'lab_docs',
+        'set_reminder',
+        'list_my_reminders',
+        'cancel_reminder',
+        'create_server_event',
+        'list_server_events',
+    ]
+    assert [t['name'] for t in client.calls[1]['tools']] == [
+        'lab_docs',
+        'set_reminder',
+        'list_my_reminders',
+        'cancel_reminder',
+        'create_server_event',
+        'list_server_events',
+        'web_search',
+        'web_fetch',
+    ]
 
 
 class FakeFiles:
@@ -131,7 +147,15 @@ async def test_sandbox_files_are_uploaded_mounted_and_deleted():
     reply = await b.answer('what is in these?', files=[docx, note])
     assert reply.text == 'It is a Word file'
     call = client.calls[0]
-    assert [t['name'] for t in call['tools']] == ['lab_docs', 'code_execution']
+    assert [t['name'] for t in call['tools']] == [
+        'lab_docs',
+        'set_reminder',
+        'list_my_reminders',
+        'cancel_reminder',
+        'create_server_event',
+        'list_server_events',
+        'code_execution',
+    ]
     content = call['messages'][0]['content']
     assert content[0]['type'] == 'text'
     assert content[1]['type'] == 'document'  # notes.md inline
@@ -153,3 +177,36 @@ async def test_files_are_deleted_even_when_the_api_fails():
     with pytest.raises(RuntimeError):
         await b.answer('x', files=[prepare('a.bin', None, b'\x00\x01')])
     assert client.files.deleted == ['file_1']
+
+
+async def test_action_tools_go_through_the_runner():
+    calls = []
+
+    async def runner(name, args):
+        calls.append((name, args))
+        return 'Reminder #1 set.', False
+
+    b, client = brain(
+        [
+            message(
+                'tool_use',
+                tool_use(
+                    'set_reminder', {'when': '2026-11-13T17:00:00-05:00', 'message': 'paper'}
+                ),
+            ),
+            message('end_turn', text('Done, I will remind you.')),
+        ]
+    )
+    reply = await b.answer('remind me', runner=runner)
+    assert reply.text == 'Done, I will remind you.'
+    assert calls == [('set_reminder', {'when': '2026-11-13T17:00:00-05:00', 'message': 'paper'})]
+    assert client.calls[1]['messages'][2]['content'][0]['content'] == 'Reminder #1 set.'
+
+
+async def test_action_tools_without_runner_are_unavailable():
+    b, client = brain(
+        [message('tool_use', tool_use('set_reminder', {})), message('end_turn', text('ok'))]
+    )
+    await b.answer('remind me')
+    result = client.calls[1]['messages'][2]['content'][0]
+    assert result['is_error'] and 'not available' in result['content']
