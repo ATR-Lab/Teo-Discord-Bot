@@ -19,6 +19,12 @@ def test_prompt_keeps_verified_facts():
         assert fact in PROMPT
 
 
+def test_prompt_explains_lab_board_deadlines():
+    assert 'starts with "Deadline:"' in PROMPT
+    assert 'create the event only after they confirm' in PROMPT
+    assert 'Paper deadline' in PROMPT
+
+
 def test_prompt_no_longer_calls_confirmed_facts_unconfirmed():
     assert 'awaiting the director' not in PROMPT
     assert "the lab's room number" not in PROMPT
