@@ -266,12 +266,13 @@ class Teo(discord.Client):
 
     # ---------- actions: events and reminders ----------
     def may_create_events(self, user: discord.abc.User) -> bool:
-        """Return whether this member may ask Teo to create server events."""
-        if not isinstance(user, discord.Member):
+        """Return whether this member holds a role in TEO_EVENT_ROLE_IDS (the Researcher role).
+
+        The role alone decides, in code, whatever the model is told: Discord permissions such as
+        administrator don't count, and with no roles configured nobody may create events.
+        """
+        if not isinstance(user, discord.Member) or user.guild.id != self.settings.guild_id:
             return False
-        p = user.guild_permissions
-        if p.administrator or p.manage_events or p.create_events:
-            return True
         return any(r.id in self.settings.event_role_ids for r in user.roles)
 
     def action_context(
@@ -292,6 +293,14 @@ class Teo(discord.Client):
         guild = self.get_guild(self.settings.guild_id)
         if guild is None:
             raise ValueError('the server is not available right now')
+        # Check the role again right before creating, from Discord's current member record,
+        # so a role removed mid-conversation counts.
+        try:
+            member = await guild.fetch_member(user.id)
+        except discord.HTTPException as e:
+            raise ValueError('could not confirm this person is a member of the server') from e
+        if not self.may_create_events(member):
+            raise ValueError('only members with the Researcher role may create server events')
         name = str(args.get('name', '')).strip()[:100]
         if not name:
             raise ValueError('the event needs a name')

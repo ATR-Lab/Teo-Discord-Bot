@@ -264,8 +264,8 @@ class Actions:
             if name == 'create_server_event':
                 if not ctx.can_create_events:
                     return (
-                        'Not allowed: this person may not create server events. Suggest they '
-                        'ask a lab staff member or an admin.',
+                        'Not allowed: only members with the Researcher role may create server '
+                        'events. Suggest they ask a lab researcher to add it.',
                         True,
                     )
                 return await ctx.create_event(args), False
