@@ -27,7 +27,7 @@ class Settings:
     context_messages: int = 12
     # Categories in question-only mode: no channel history, no web tools (research channels).
     private_category_ids: frozenset[int] = frozenset()
-    # Roles whose members may ask Teo to create server events (besides Discord's own permission).
+    # Roles whose members may ask Teo to create server events; nothing else grants it.
     event_role_ids: frozenset[int] = frozenset()
     # Where reminders are stored; systemd sets STATE_DIRECTORY on the server.
     state_dir: str = 'state'

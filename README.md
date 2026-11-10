@@ -63,7 +63,7 @@
 | **Context** | The reply chain and the last 12 messages in the channel. |
 | **Files** | Reads what people attach (and files in the message they reply to): text, code, logs and Discord's `message.txt` inline; images and PDFs natively; anything else (Office files, archives, NumPy, ROS bags, huge logs) in Claude's code execution sandbox, where Teo writes code to open it. Up to 6 files and 25 MB each; sandbox uploads expire in an hour and are deleted after the answer. `/ask` takes a `file` too. |
 | **Reminders** | "@Teo remind me to submit the HRI paper next Friday at 5 PM": Teo works out the time (lab time, America/New_York; it understands AoE deadlines) and pings that person in the same channel when it's due, or by DM if the channel is gone. Only ever for the person asking. `/reminders` lists yours, `/reminder-cancel` removes one. Stored in SQLite in `/var/lib/teo`, so they survive deploys. |
-| **Server events** | "@Teo create an event: Lab social, Nov 6, 4 to 6 PM, Student Center Ballroom" creates a Discord scheduled event and shares the link. Only for members with Discord's event or admin permission or a role in `TEO_EVENT_ROLE_IDS`; Teo asks for the place and time instead of guessing. It can also list upcoming events. |
+| **Server events** | "@Teo create an event: Lab social, Nov 6, 4 to 6 PM, Student Center Ballroom" creates a Discord scheduled event and shares the link. Only for members with the Researcher role (`TEO_EVENT_ROLE_IDS`), checked in code when the question comes in and again just before the event is created; Discord permissions, even administrator, don't count. Teo asks for the place and time instead of guessing. It can also list upcoming events. |
 | **Research channels** | Question-only mode in 🤖 Research projects: Teo sends only the message that mentions it (plus its own earlier replies), no channel history, and web search and fetch are off there. Web tools stay on everywhere else. |
 | **Character** | An upbeat, curious lab robot with dry humor in small doses. It teaches instead of doing graded homework, says plainly when it doesn't know, and never invents lab facts. It may sign off with one of its own `:teo_*:` emoji. |
 | **Safety** | Simulation first and a person at the e-stop for any robot code; 911 first in emergencies; never asks for personal data; keeps conversations with young members in channels. |
@@ -120,7 +120,7 @@ All non-secret settings live in [`deploy/settings.env`](deploy/settings.env); ch
 | `TEO_HELP_FORUM_ID` | help-desk forum | Forum whose new posts Teo answers |
 | `TEO_GUILD_ID` | the ATR Lab server | The only server Teo answers in |
 | `TEO_CONTEXT_MESSAGES` | `12` | Recent channel messages sent as context |
-| `TEO_EVENT_ROLE_IDS` | Admin, ATR Alchemist, Professor, Researcher, ATR lab staff | Roles whose members may ask Teo to create events |
+| `TEO_EVENT_ROLE_IDS` | Researcher | The only roles whose members may ask Teo to create events (empty: nobody) |
 | `TEO_PRIVATE_CATEGORY_IDS` | 🤖 Research projects | Categories in question-only mode (comma-separated ids) |
 
 ## How it works
