@@ -25,6 +25,12 @@ def test_prompt_explains_lab_board_deadlines():
     assert 'Paper deadline' in PROMPT
 
 
+def test_prompt_refuses_event_requests_up_front():
+    assert '"Event permission:" line' in PROMPT
+    assert 'say so right away' in PROMPT
+    assert 'Anyone may still set a personal reminder' in PROMPT
+
+
 def test_prompt_no_longer_calls_confirmed_facts_unconfirmed():
     assert 'awaiting the director' not in PROMPT
     assert "the lab's room number" not in PROMPT

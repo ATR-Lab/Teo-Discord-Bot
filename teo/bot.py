@@ -69,6 +69,15 @@ def today_line() -> str:
     return f'Now: {t:%A, %B %d, %Y}, {clock} (lab time, America/New_York).'
 
 
+def event_permission_line(allowed: bool) -> str:
+    """Tell the model early whether the asker may create events; the tool still enforces it."""
+    if allowed:
+        return 'Event permission: the person asking may create server events.'
+    return (
+        'Event permission: the person asking may not create server events or lab board deadlines.'
+    )
+
+
 class Teo(discord.Client):
     """The Discord client: triggers, context building and replies.
 
@@ -527,7 +536,8 @@ class Teo(discord.Client):
         content = (
             f'{today_line()} Asked with /ask in {where}'
             f'{" (private answer)" if private else ""}.'
-            f'{" " + PRIVATE_LINE if research else ""}\n\n'
+            f'{" " + PRIVATE_LINE if research else ""}\n'
+            f'{event_permission_line(self.may_create_events(interaction.user))}\n\n'
             f'Question from {interaction.user.display_name}:\n{question[:3000]}'
         )
         files, skipped = await self.gather_files([file] if file else [])
@@ -593,7 +603,8 @@ class Teo(discord.Client):
             recent.reverse()
 
         lines = [
-            f'{today_line()} Channel: {channel_label(message.channel)}, id {message.channel.id}.'
+            f'{today_line()} Channel: {channel_label(message.channel)}, id {message.channel.id}.',
+            event_permission_line(self.may_create_events(message.author)),
         ]
         if private:
             lines.append(PRIVATE_LINE)
