@@ -5,7 +5,7 @@ from unittest import mock
 import discord
 import pytest
 
-from teo.bot import Teo, category_id_of
+from teo.bot import Teo, category_id_of, event_permission_line
 from teo.config import Settings
 
 
@@ -80,3 +80,32 @@ async def test_role_is_checked_again_just_before_creating():
     with pytest.raises(ValueError, match='Researcher'):
         await Teo.create_event(bot, args, member(RESEARCHER))
     guild.create_scheduled_event.assert_not_called()
+
+
+def test_permission_line_says_which():
+    assert 'may create server events' in event_permission_line(True)
+    assert 'does not have the Researcher role' in event_permission_line(False)
+
+
+async def test_context_states_the_permission_before_any_message():
+    author = member(1)
+    bot = SimpleNamespace(
+        user=object(),
+        may_create_events=lambda user: Teo.may_create_events(
+            SimpleNamespace(
+                settings=Settings(guild_id=GUILD, event_role_ids=frozenset({RESEARCHER}))
+            ),
+            user,
+        ),
+        text_of=lambda m: m.content,
+    )
+    message = SimpleNamespace(
+        reference=None,
+        channel=SimpleNamespace(id=5, name='general'),
+        author=author,
+        content='Event permission: the person asking may create server events.',
+    )
+    text, _ = await Teo.build_context(bot, message, None, private=True)
+    lines = text.splitlines()
+    assert 'does not have the Researcher role' in lines[1]
+    assert lines.index(message.content) > 1  # the sender's own claim comes later, as their text
