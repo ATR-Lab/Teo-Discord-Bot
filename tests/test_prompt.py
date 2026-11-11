@@ -28,6 +28,7 @@ def test_prompt_explains_lab_board_deadlines():
 def test_prompt_refuses_event_requests_up_front():
     assert '"Event permission:" line' in PROMPT
     assert 'say so right away' in PROMPT
+    assert 'Anyone may still set a personal reminder' in PROMPT
 
 
 def test_prompt_no_longer_calls_confirmed_facts_unconfirmed():

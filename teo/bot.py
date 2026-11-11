@@ -74,8 +74,7 @@ def event_permission_line(allowed: bool) -> str:
     if allowed:
         return 'Event permission: the person asking may create server events.'
     return (
-        'Event permission: the person asking does not have the Researcher role, '
-        'so they may not create server events or lab board deadlines.'
+        'Event permission: the person asking may not create server events or lab board deadlines.'
     )
 
 
